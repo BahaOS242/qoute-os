@@ -60,7 +60,10 @@ function amountNear(prompt: string, keyword: RegExp): number | null {
 
 export function heuristicProposal(prompt: string, existing?: { slug: string; name: string } | null): AiProposal {
   const lower = prompt.toLowerCase();
-  const serviceWord = KNOWN_SERVICES.find((s) => lower.includes(s));
+  // The service is the known service word mentioned first ("consulting ... payroll adds $120" -> Consulting).
+  const serviceWord = KNOWN_SERVICES.map((w) => ({ w, i: lower.indexOf(w) }))
+    .filter((x) => x.i >= 0)
+    .sort((a, b) => a.i - b.i || b.w.length - a.w.length)[0]?.w;
   const name = existing?.name ?? (serviceWord ? serviceWord.replace(/\b\w/g, (c) => c.toUpperCase()) : "New service");
   const baseMatch = prompt.match(/(?:starts?\s+(?:at|from)|from|base(?:\s+price)?\s+(?:of|is)?|minimum(?:\s+of)?)\s*(\$\s?\d[\d,]*(?:\.\d{1,2})?\s*k?)/i);
   const base = (baseMatch ? parseMoney(baseMatch[1]) : null) ?? parseMoney(prompt) ?? 0;

@@ -37,7 +37,7 @@ export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
 export function Field({ label, hint, error, children, className }: { label: ReactNode; hint?: ReactNode; error?: string; children: ReactNode; className?: string }) {
   return (
     <label className={cn("block space-y-1.5", className)}>
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className="block text-sm font-medium text-slate-700">{label}</span>
       {children}
       {hint && !error && <span className="block text-xs text-slate-500">{hint}</span>}
       {error && <span className="block text-xs text-red-600">{error}</span>}

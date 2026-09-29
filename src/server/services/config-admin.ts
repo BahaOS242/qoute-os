@@ -334,7 +334,7 @@ export async function deleteMessageTemplate(ctx: OrgContext, id: string) {
 export async function listAutomations(ctx: OrgContext) {
   const [automations, runs] = await Promise.all([
     prisma.automation.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { createdAt: "asc" } }),
-    prisma.automationRun.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { createdAt: "desc" }, take: 25, include: { automation: { select: { name: true } } } }),
+    prisma.automationRun.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { createdAt: "desc" }, take: 12, include: { automation: { select: { name: true } } } }),
   ]);
   return { automations, runs };
 }

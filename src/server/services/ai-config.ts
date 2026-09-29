@@ -33,8 +33,19 @@ export async function createProposal(ctx: OrgContext, input: z.infer<typeof prop
     currency: ctx.organization.currency,
     existingService: existing ? { slug: existing.slug, name: existing.name, questions: existing.questions } : null,
   });
-  // Force the proposal onto the selected service when editing one.
-  if (existing) result.config.services = result.config.services.slice(0, 1).map((s) => ({ ...s, slug: existing.slug, name: existing.name }));
+  // Force the proposal onto the selected service when editing one; a "new service" proposal must
+  // never silently target an existing service, so colliding slugs get a unique suffix.
+  if (existing) {
+    result.config.services = result.config.services.slice(0, 1).map((s) => ({ ...s, slug: existing.slug, name: existing.name }));
+  } else {
+    const taken = new Set((await prisma.service.findMany({ where: { organizationId: ctx.organizationId }, select: { slug: true } })).map((s) => s.slug));
+    result.config.services = result.config.services.map((s) => {
+      let slug = s.slug;
+      for (let n = 2; taken.has(slug); n++) slug = `${s.slug.slice(0, 55)}-${n}`;
+      taken.add(slug);
+      return { ...s, slug };
+    });
+  }
   // Proposals only carry services; they never change branding, automations or lead rules.
   const doc = { services: result.config.services };
   const validation = validateQuoteConfig(doc);

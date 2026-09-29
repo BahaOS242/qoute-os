@@ -141,8 +141,10 @@ describe("configuration export / import and recipes", () => {
 describe("AI configuration assistant", () => {
   it("proposes structured config that only takes effect after approval", async () => {
     const { ctx, org } = await createAccountingOrg("acme");
+    const bookkeeping = await prisma.service.findFirstOrThrow({ where: { organizationId: org.id, slug: "bookkeeping" } });
     const proposal = await createProposal(ctx, {
       prompt: "Monthly bookkeeping starts at $300 and goes up depending on transaction volume and payroll. Payroll adds $120.",
+      serviceId: bookkeeping.id,
     });
     expect(proposal.status).toBe("PENDING");
     const svc = (proposal.proposal as { services: { slug: string; basePriceCents: number; pricingRules: { action: { amountCents?: number } }[] }[] }).services[0];
@@ -157,6 +159,17 @@ describe("AI configuration assistant", () => {
     expect(decided.status).toBe("APPROVED");
     expect((await prisma.service.findFirstOrThrow({ where: { organizationId: org.id, slug: "bookkeeping" } })).basePriceCents).toBe(30_000);
     await expect(decideProposal(ctx, proposal.id, true)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("a new-service proposal never overwrites an existing service", async () => {
+    const { ctx, org } = await createAccountingOrg("acme");
+    const p = await createProposal(ctx, { prompt: "Monthly consulting retainer starts at $300 and goes up with payroll. Payroll adds $120." });
+    const svc = (p.proposal as { services: { slug: string; name: string }[] }).services[0];
+    expect(svc.name).toBe("Consulting");
+    const bk = await createProposal(ctx, { prompt: "Bookkeeping starts at $999 per month." });
+    expect((bk.proposal as { services: { slug: string }[] }).services[0].slug).toBe("bookkeeping-2");
+    await decideProposal(ctx, bk.id, true);
+    expect((await prisma.service.findFirstOrThrow({ where: { organizationId: org.id, slug: "bookkeeping" } })).basePriceCents).toBe(25_000);
   });
 
   it("rejected proposals change nothing", async () => {
