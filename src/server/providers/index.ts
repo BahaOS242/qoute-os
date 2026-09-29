@@ -25,9 +25,10 @@ export * from "./types";
 export class ConsoleEmailProvider implements EmailProvider {
   readonly name = "console";
   readonly outbox: EmailMessage[] = [];
+  constructor(private opts: { silent?: boolean } = {}) {}
   async send(message: EmailMessage) {
     this.outbox.push(message);
-    if (process.env.NODE_ENV !== "test") console.info(`[email:console] to=${message.to} subject="${message.subject}"`);
+    if (!this.opts.silent && process.env.NODE_ENV !== "test") console.info(`[email:console] to=${message.to} subject="${message.subject}"`);
     return { id: randomUUID(), status: "logged" as const };
   }
 }

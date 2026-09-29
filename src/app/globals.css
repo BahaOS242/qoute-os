@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --color-ink: #0f172a;
+  --color-muted: #64748b;
+  --color-line: #e2e8f0;
+  --color-canvas: #f8fafc;
+  --color-brand: #1e3a5f;
+}
+
+:root {
+  --brand-primary: #1e3a5f;
+  --brand-accent: #c8a24a;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+/* Brand-aware helpers used by funnel templates (colors come from organization config). */
+.bg-brand { background-color: var(--brand-primary); }
+.text-brand { color: var(--brand-primary); }
+.border-brand { border-color: var(--brand-primary); }
+.bg-accent { background-color: var(--brand-accent); }
+.text-accent { color: var(--brand-accent); }
+.border-accent { border-color: var(--brand-accent); }
+.ring-brand:focus-visible { outline: 2px solid var(--brand-primary); outline-offset: 2px; }
+
+@keyframes qo-fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+.qo-enter { animation: qo-fade-up 0.28s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .qo-enter { animation: none; }
+}
+
+/* Number inputs: no spinners (visitors type values; spinners look out of place in templates). */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
