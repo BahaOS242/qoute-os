@@ -106,6 +106,7 @@ CREATE TABLE "Organization" (
     "bookingUrl" TEXT,
     "highValueThresholdCents" INTEGER,
     "quoteValidityDays" INTEGER NOT NULL DEFAULT 30,
+    "glossary" JSONB NOT NULL DEFAULT '[]',
     "recipeKey" TEXT,
     "webhookSecret" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

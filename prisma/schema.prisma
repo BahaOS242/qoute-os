@@ -118,6 +118,8 @@ model Organization {
   /// Leads whose estimated value meets this threshold fire HIGH_VALUE_LEAD
   highValueThresholdCents Int?
   quoteValidityDays       Int      @default(30)
+  /// Visitor-facing terminology used by the quote assistant: [{ term, definition }]
+  glossary                Json     @default("[]")
   /// Recipe this organization was created from (provenance only)
   recipeKey               String?
   /// HMAC secret used to verify inbound webhooks (booking provider etc.)

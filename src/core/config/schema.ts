@@ -176,6 +176,7 @@ export const organizationSettingsInput = z.object({
   timezone: z.string().max(60).optional(),
   highValueThresholdCents: z.number().int().min(0).nullish(),
   quoteValidityDays: z.number().int().min(1).max(365).optional(),
+  glossary: z.array(z.object({ term: z.string().min(1).max(80), definition: z.string().min(1).max(600) })).max(100).optional(),
 });
 
 export const quoteConfigSchema = z.object({
@@ -187,6 +188,8 @@ export const quoteConfigSchema = z.object({
   automations: z.array(automationInput).max(100).default([]),
 });
 export type QuoteConfig = z.infer<typeof quoteConfigSchema>;
+/** Authoring shape (defaults optional) used by recipes and imports. */
+export type QuoteConfigInput = z.input<typeof quoteConfigSchema>;
 
 export interface ConfigValidation {
   ok: boolean;

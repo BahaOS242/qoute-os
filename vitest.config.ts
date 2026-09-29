@@ -6,6 +6,8 @@ const alias = { "@": path.resolve(__dirname, "src") };
 export default defineConfig({
   resolve: { alias },
   test: {
+    // Integration tests share one Postgres database, so files run sequentially.
+    fileParallelism: false,
     projects: [
       {
         resolve: { alias },
@@ -23,7 +25,6 @@ export default defineConfig({
           environment: "node",
           globalSetup: ["tests/integration/global-setup.ts"],
           setupFiles: ["tests/integration/setup-env.ts"],
-          fileParallelism: false,
           testTimeout: 30_000,
           hookTimeout: 60_000,
         },

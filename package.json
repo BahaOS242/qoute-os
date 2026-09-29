@@ -23,6 +23,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.129.0",
     "@prisma/client": "^6.19.3",
     "better-auth": "^1.7.6",
     "next": "^15.5.26",
