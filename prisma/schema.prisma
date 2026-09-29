@@ -1,0 +1,681 @@
+// QuoteOS data model.
+//
+// Conventions
+// - Every tenant-owned row carries `organizationId` (directly, or via a parent that does)
+//   and every query in src/server is scoped by it.
+// - Money is stored as integer minor units (`...Cents`) to keep pricing deterministic.
+// - Business configuration (services, questions, rules, automations, templates) lives here,
+//   never in React components.
+// - Quotes store immutable snapshots of answers, service and pricing calculation.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (Better Auth core schema)
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+
+  memberships Membership[]
+  ownedLeads  Lead[]       @relation("LeadOwner")
+  notes       LeadNote[]
+  tasks       Task[]       @relation("TaskAssignee")
+  auditLogs   AuditLog[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Organization {
+  id                      String   @id @default(cuid())
+  name                    String
+  slug                    String   @unique
+  logoUrl                 String?
+  /// Brand tokens consumed by UI templates: { primaryColor, accentColor, headline, subheadline, ... }
+  brand                   Json     @default("{}")
+  /// Key of the active UI template (see src/templates/registry.ts)
+  templateKey             String   @default("professional")
+  timezone                String   @default("UTC")
+  currency                String   @default("USD")
+  contactEmail            String?
+  contactPhone            String?
+  website                 String?
+  /// Staff address that receives new-lead / needs-review notifications
+  notificationEmail       String?
+  bookingUrl              String?
+  /// Leads whose estimated value meets this threshold fire HIGH_VALUE_LEAD
+  highValueThresholdCents Int?
+  quoteValidityDays       Int      @default(30)
+  /// Recipe this organization was created from (provenance only)
+  recipeKey               String?
+  /// HMAC secret used to verify inbound webhooks (booking provider etc.)
+  webhookSecret           String
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  memberships      Membership[]
+  services         Service[]
+  questions        Question[]
+  pricingRules     PricingRule[]
+  leadRules        LeadRule[]
+  quoteSessions    QuoteSession[]
+  quotes           Quote[]
+  leads            Lead[]
+  events           Event[]
+  automations      Automation[]
+  automationRuns   AutomationRun[]
+  messageTemplates MessageTemplate[]
+  auditLogs        AuditLog[]
+  configProposals  ConfigProposal[]
+  appointments     Appointment[]
+  tasks            Task[]
+  outboundMessages OutboundMessage[]
+}
+
+model Membership {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MemberRole   @default(MEMBER)
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Quote configuration
+// ---------------------------------------------------------------------------
+
+enum QuoteMode {
+  INSTANT
+  ESTIMATE
+  HUMAN_REVIEW
+  CONTACT_ONLY
+}
+
+enum BillingPeriod {
+  ONE_TIME
+  MONTHLY
+  QUARTERLY
+  ANNUAL
+}
+
+model Service {
+  id                   String        @id @default(cuid())
+  organizationId       String
+  name                 String
+  slug                 String
+  description          String?
+  /// Short bullet list shown on the estimate screen ("What's included")
+  inclusions           String[]      @default([])
+  /// Assumptions shown on the estimate screen
+  assumptions          String[]      @default([])
+  active               Boolean       @default(true)
+  quoteMode            QuoteMode     @default(INSTANT)
+  basePriceCents       Int           @default(0)
+  minimumPriceCents    Int?
+  billingPeriod        BillingPeriod @default(ONE_TIME)
+  /// ESTIMATE mode: +/- percentage shown as a range around the computed total
+  estimateRangePercent Int?
+  order                Int           @default(0)
+  icon                 String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  questions     Question[]
+  pricingRules  PricingRule[]
+  leadRules     LeadRule[]
+  quoteSessions QuoteSession[]
+  quotes        Quote[]
+  leads         Lead[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId, active])
+}
+
+enum QuestionType {
+  SINGLE_SELECT
+  MULTI_SELECT
+  NUMBER
+  CURRENCY
+  TEXT
+  BOOLEAN
+  RANGE
+  EMAIL
+  PHONE
+}
+
+model Question {
+  id             String       @id @default(cuid())
+  organizationId String
+  serviceId      String
+  /// Stable machine key used by conditions, pricing rules and snapshots
+  key            String
+  label          String
+  description    String?
+  /// Plain-language helper copy for non-technical visitors
+  helpText       String?
+  type           QuestionType
+  required       Boolean      @default(true)
+  order          Int          @default(0)
+  active         Boolean      @default(true)
+  /// Type-specific settings: { min, max, step, unit, placeholder, maxLength }
+  config         Json         @default("{}")
+  /// Condition (src/core/conditions) controlling visibility; null = always visible
+  visibleWhen    Json?
+  /// Optional mapping of the answer onto a lead attribute ("industry" | "urgency" | "company")
+  leadField      String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  options      QuestionOption[]
+
+  @@unique([serviceId, key])
+  @@index([organizationId])
+}
+
+model QuestionOption {
+  id         String   @id @default(cuid())
+  questionId String
+  label      String
+  value      String
+  order      Int      @default(0)
+  metadata   Json     @default("{}")
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, value])
+}
+
+model PricingRule {
+  id             String   @id @default(cuid())
+  organizationId String
+  serviceId      String
+  /// Stable machine key (shown in calculation breakdowns)
+  key            String
+  name           String
+  description    String?
+  /// Lower numbers run first; ties are broken by key for determinism
+  priority       Int      @default(100)
+  /// Condition (src/core/conditions); null = always applies
+  condition      Json?
+  /// { type: ADD|SUBTRACT|MULTIPLY|SET|PERCENTAGE|PER_UNIT|REQUIRE_REVIEW, value, field? }
+  action         Json
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service      @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, key])
+  @@index([organizationId])
+}
+
+/// Qualification + routing rules evaluated when a lead is created.
+model LeadRule {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// null = applies to every service
+  serviceId      String?
+  name           String
+  priority       Int      @default(100)
+  condition      Json?
+  /// { type: ADD_SCORE|SET_INTENT|ASSIGN_TO|NEEDS_REVIEW|TAG, value }
+  action         Json
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service?     @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Quote runtime
+// ---------------------------------------------------------------------------
+
+model QuoteSession {
+  id              String    @id @default(cuid())
+  organizationId  String
+  serviceId       String?
+  /// Secret presented by the visitor's browser to resume/modify this session
+  publicTokenHash String
+  visitorId       String?
+  currentStep     Int       @default(0)
+  answers         Json      @default("{}")
+  startedAt       DateTime  @default(now())
+  lastActivityAt  DateTime  @default(now())
+  completedAt     DateTime?
+  abandonedAt     DateTime?
+  source          String?
+  medium          String?
+  campaign        String?
+  content         String?
+  term            String?
+  referrer        String?
+  landingPage     String?
+  ipHash          String?
+  userAgent       String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  quote        Quote?
+  lead         Lead?
+  events       Event[]
+
+  @@index([organizationId, startedAt])
+  @@index([organizationId, completedAt, abandonedAt, lastActivityAt])
+}
+
+enum QuoteStatus {
+  ESTIMATED
+  NEEDS_REVIEW
+  CONTACT_REQUESTED
+  ACCEPTED
+  EXPIRED
+}
+
+/// Immutable record of what a visitor was shown. Pricing fields are never updated.
+model Quote {
+  id                  String        @id @default(cuid())
+  organizationId      String
+  quoteSessionId      String        @unique
+  serviceId           String?
+  quoteMode           QuoteMode
+  status              QuoteStatus
+  /// [{ key, label, value, display }] at generation time
+  answersSnapshot     Json
+  /// { name, slug, quoteMode, basePriceCents, billingPeriod, inclusions, assumptions }
+  serviceSnapshot     Json
+  /// Full engine output incl. the rule definitions used (see src/core/pricing)
+  calculation         Json?
+  estimatedPriceCents Int?
+  rangeLowCents       Int?
+  rangeHighCents      Int?
+  billingPeriod       BillingPeriod
+  currency            String
+  expiresAt           DateTime?
+  generatedAt         DateTime      @default(now())
+  acceptedAt          DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quoteSession QuoteSession @relation(fields: [quoteSessionId], references: [id], onDelete: Cascade)
+  service      Service?     @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  lead         Lead?
+  events       Event[]
+
+  @@index([organizationId, generatedAt])
+}
+
+enum LeadStatus {
+  NEW
+  NEEDS_REVIEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL_SENT
+  WON
+  LOST
+  DISQUALIFIED
+}
+
+enum LeadIntent {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model Lead {
+  id                  String         @id @default(cuid())
+  organizationId      String
+  quoteId             String?        @unique
+  quoteSessionId      String?        @unique
+  serviceId           String?
+  name                String
+  company             String?
+  email               String
+  phone               String?
+  industry            String?
+  urgency             String?
+  /// Output of lead rules: { score, tags, matchedRules }
+  qualification       Json           @default("{}")
+  score               Int            @default(0)
+  estimatedValueCents Int?
+  billingPeriod       BillingPeriod?
+  currency            String
+  intent              LeadIntent     @default(MEDIUM)
+  status              LeadStatus     @default(NEW)
+  ownerId             String?
+  source              String?
+  medium              String?
+  campaign            String?
+  content             String?
+  term                String?
+  referrer            String?
+  landingPage         String?
+  summary             String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quote        Quote?            @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  quoteSession QuoteSession?     @relation(fields: [quoteSessionId], references: [id], onDelete: SetNull)
+  service      Service?          @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  owner        User?             @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  events       Event[]
+  notes        LeadNote[]
+  tasks        Task[]
+  appointments Appointment[]
+  messages     OutboundMessage[]
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status])
+}
+
+model LeadNote {
+  id        String   @id @default(cuid())
+  leadId    String
+  authorId  String?
+  body      String
+  createdAt DateTime @default(now())
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+}
+
+model Task {
+  id             String       @id @default(cuid())
+  organizationId String
+  leadId         String?
+  assigneeId     String?
+  title          String
+  dueAt          DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignee       User?        @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+}
+
+model Appointment {
+  id             String       @id @default(cuid())
+  organizationId String
+  leadId         String?
+  provider       String
+  externalId     String?
+  startsAt       DateTime
+  status         String       @default("BOOKED")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead           Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, provider, externalId])
+}
+
+// ---------------------------------------------------------------------------
+// Events, analytics, audit
+// ---------------------------------------------------------------------------
+
+enum EventType {
+  QUOTE_VIEWED
+  QUOTE_STARTED
+  QUESTION_ANSWERED
+  QUOTE_COMPLETED
+  QUOTE_ABANDONED
+  LEAD_CREATED
+  LEAD_STATUS_CHANGED
+  LEAD_ASSIGNED
+  NOTE_ADDED
+  EMAIL_SENT
+  WHATSAPP_SENT
+  SMS_SENT
+  NOTIFICATION_SENT
+  TASK_CREATED
+  CRM_RECORD_CREATED
+  CONSULTATION_BOOKED
+  QUOTE_ACCEPTED
+  AUTOMATION_FAILED
+}
+
+/// Append-only funnel + lead timeline events.
+model Event {
+  id             String    @id @default(cuid())
+  organizationId String
+  type           EventType
+  visitorId      String?
+  quoteSessionId String?
+  quoteId        String?
+  leadId         String?
+  userId         String?
+  serviceId      String?
+  payload        Json      @default("{}")
+  createdAt      DateTime  @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  quoteSession QuoteSession? @relation(fields: [quoteSessionId], references: [id], onDelete: SetNull)
+  quote        Quote?        @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, type, createdAt])
+  @@index([leadId])
+  @@index([quoteSessionId])
+}
+
+model AuditLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  actorId        String?
+  action         String
+  entityType     String
+  entityId       String?
+  before         Json?
+  after          Json?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor          User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Automations & messaging
+// ---------------------------------------------------------------------------
+
+enum AutomationTrigger {
+  QUOTE_COMPLETED
+  LEAD_CREATED
+  HIGH_VALUE_LEAD
+  NEEDS_REVIEW
+  QUOTE_ABANDONED
+  APPOINTMENT_BOOKED
+  LEAD_STATUS_CHANGED
+}
+
+model Automation {
+  id             String            @id @default(cuid())
+  organizationId String
+  name           String
+  trigger        AutomationTrigger
+  /// Optional condition evaluated against the trigger context
+  condition      Json?
+  /// [{ type: SEND_EMAIL|SEND_WHATSAPP|SEND_SMS|CREATE_TASK|NOTIFY_USER|CREATE_CRM_RECORD|BOOKING_LINK, config }]
+  actions        Json
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  runs           AutomationRun[]
+
+  @@index([organizationId, trigger, active])
+}
+
+model AutomationRun {
+  id             String            @id @default(cuid())
+  organizationId String
+  automationId   String
+  trigger        AutomationTrigger
+  leadId         String?
+  quoteSessionId String?
+  status         String
+  results        Json              @default("[]")
+  error          String?
+  createdAt      DateTime          @default(now())
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  automation     Automation        @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+}
+
+enum MessageChannel {
+  EMAIL
+  WHATSAPP
+  SMS
+}
+
+model MessageTemplate {
+  id             String         @id @default(cuid())
+  organizationId String
+  key            String
+  channel        MessageChannel
+  name           String
+  subject        String?
+  /// Body with {{placeholders}} (see src/server/messaging/render.ts)
+  body           String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+}
+
+/// Every outbound message attempt, whichever provider handled it.
+model OutboundMessage {
+  id             String         @id @default(cuid())
+  organizationId String
+  leadId         String?
+  channel        MessageChannel
+  provider       String
+  to             String
+  subject        String?
+  body           String
+  status         String
+  providerId     String?
+  error          String?
+  createdAt      DateTime       @default(now())
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lead           Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI configuration assistant
+// ---------------------------------------------------------------------------
+
+enum ProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// AI-generated configuration awaiting explicit admin approval.
+model ConfigProposal {
+  id             String         @id @default(cuid())
+  organizationId String
+  serviceId      String?
+  prompt         String
+  /// Validated partial QuoteConfig (src/core/config/schema.ts)
+  proposal       Json
+  explanation    String?
+  provider       String
+  status         ProposalStatus @default(PENDING)
+  createdById    String?
+  decidedById    String?
+  decidedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+}
